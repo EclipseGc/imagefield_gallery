@@ -508,8 +508,10 @@ function imagefield_gallery_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
         foreach ($results as $gallery) {
           foreach ($gallery->image_fields as $fields) {
             list($type, $field) = explode(':', $fields);
-            unset($node->content[$field]);
-            $node->content[$field][0]['#value'] = views_embed_view('imagefield_gallery_'. $gallery->task_name);
+            if ($field) {
+              unset($node->content[$field]['field']);
+              $node->content[$field][0]['#value'] = views_embed_view('imagefield_gallery_'. $gallery->task_name);
+            }
           }
         }
       }
