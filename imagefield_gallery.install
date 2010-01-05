@@ -1,0 +1,126 @@
+<?php
+
+function imagefield_gallery_install() {
+  drupal_install_schema('imagefield_gallery');
+}
+
+function imagefield_gallery_uninstall() {
+  drupal_uninstall_schema('imagefield_gallery');
+  views_invalidate_cache();
+}
+
+function imagefield_gallery_schema() {
+  $schema = array();
+
+  $schema['imagefield_galleries'] = array(
+    'export' => array(
+      'key' => 'imagefield_gallery',
+      'identifier' => 'gallery',
+      'bulk export' => TRUE,
+      'export callback' => 'imagefield_gallery_export_task_handler',
+      'api' => array(
+        'owner' => 'imagefield_gallery',
+        'api' => 'imagefield_gallery_api',
+        'minimum_version' => 3,
+        'current_version' => 3,
+      ),
+    ),
+    'fields' => array(
+      'gid' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary ID field for the table. Not used for anything except internal lookups.',
+        'no export' => TRUE,
+      ),
+      'task_name' => array(
+        'type' => 'varchar',
+        'length' => '255',
+        'description' => 'Unique ID for this task handler. Used to identify it programmatically.',
+      ),
+      'gallery_type' => array(
+        'type' => 'varchar',
+        'length' => '255',
+        'description' => 'The Type of gallery being created',
+      ),
+      'node_type' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'description' => 'Selected node type.',
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'image_fields' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'description' => 'Serialized configuration of the image fields.',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+        'object default' => array(),
+      ),
+      'gallery_style' => array(
+        'type' => 'varchar',
+        'length' => '255',
+        'description' => 'The style of gallery to be used.',
+      ),
+      'view_conf' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'description' => 'Serialized configurations for the view.',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+        'object default' => array(),
+      ),
+    ),
+    'primary key' => array('gid'),
+    'unique keys' => array(
+      'name' => array('task_name'),
+    ),
+  );
+  
+  $schema['imagefield_gallery_lightbox'] = array(
+    'export' => array(
+      'key' => 'imagefield_gallery',
+      'bulk export' => TRUE,
+      'export callback' => 'imagefield_gallery_lightbox_export_task_handler',
+    ),
+    'fields' => array(
+      'lgid' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary ID field for the table. Not used for anything except internal lookups.',
+        'no export' => TRUE,
+      ),
+      'task_name' => array(
+        'type' => 'varchar',
+        'length' => '255',
+        'description' => 'Unique ID for this task handler. Used to identify it programmatically.',
+      ),
+      'thumb_preset' => array(
+        'description' => 'The preset id of the desired imagecache preset',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'preview_preset' => array(
+        'description' => 'The preset id of the desired imagecache preset',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0
+      ),
+      'view_conf' => array(
+        'type' => 'text',
+        'size' => 'big',
+        'description' => 'Serialized configurations for the view.',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+        'object default' => array(),
+      ),
+    ),
+    'primary key' => array('lgid'),
+    'unique keys' => array(
+      'name' => array('task_name'),
+    ),
+  );
+  
+  return $schema;
+}

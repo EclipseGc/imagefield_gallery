@@ -1,0 +1,618 @@
+<?php
+
+/**
+ * Implementation of hook_views_api().
+ */
+function imagefield_gallery_views_api() {
+  return array(
+    'api' => 2,
+    'path' => drupal_get_path('module', 'imagefield_gallery') . '/includes',
+  );
+}
+
+function imagefield_gallery_ctools_plugin_directory($module, $plugin) {
+  if ($module == 'imagefield_gallery' || $module == 'ctools') {
+    return 'plugins/' . $plugin;
+  }
+}
+
+function imagefield_gallery_menu() {
+  $items = array();
+  $items['admin/build/galleries'] = array(
+    'title' => 'Galleries',
+    'description' => 'Create galleries of field values on nodes themselves, or build views of galleries of nodes.',
+    'page callback' => 'imagefield_gallery_list',
+    'page arguments' => array(),
+    'access arguments' => array('administer galleries'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/build/galleries/list'] = array(
+    'title' => 'Galleries',
+    'page callback' => 'imagefield_gallery_list',
+    'access arguments' => array('administer galleries'),
+    'type' => MENU_DEFAULT_LOCAL_TASK,
+  );
+  $items['admin/build/galleries/create'] = array(
+    'title' => 'Create Gallery',
+    'page callback' => 'imagefield_gallery_create',
+    'page arguments' => array(),
+    'access arguments' => array('administer galleries'),
+    'type' => MENU_LOCAL_TASK,
+    'weight' => 1,
+  );
+  $items['admin/build/galleries/edit'] = array(
+    'page callback' => 'imagefield_gallery_create',
+    'page arguments' => array(),
+    'access arguments' => array('administer galleries'),
+    'type' => MENU_CALLBACK,
+    'weight' => 1,
+  );
+  $items['admin/build/galleries/delete'] = array(
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('imagefield_gallery_delete'),
+    'access arguments' => array('administer galleries'),
+    'type' => MENU_CALLBACK,
+    'weight' => 1,
+  );
+  return $items;
+}
+
+function imagefield_gallery_perm() {
+  return array('administer galleries');
+}
+
+function imagefield_gallery_page_callback($task_name) {
+  return views_embed_view('imagefield_gallery_'. $task_name);
+}
+
+function imagefield_gallery_list() {
+  $galleries = imagefield_gallery_get_pages();
+  foreach ($galleries as $gallery) {
+    list($module, $type) = explode(':', $gallery->gallery_type);
+    $row = array();
+    $row[] = $gallery->task_name;
+    $row[] = $type;
+    $row[] = $module;
+    $row[] = $gallery->node_type;
+    $row[] = theme('item_list', unserialize($gallery->image_fields));
+    $row[] = $gallery->gallery_style;
+    $row[] = l('edit', 'admin/build/galleries/edit/'. $gallery->task_name);
+    $row[] = l('delete', 'admin/build/galleries/delete/'. $gallery->task_name);
+    $rows[] = $row;
+  }
+  $headers = array(t('Gallery'), t('Type'), t('Module'), t('Node Type'), t('Field(s)'), t('Style'), '', '');
+  return theme('table', $headers, $rows);
+}
+
+function imagefield_gallery_delete($form_state, $task_name) {
+  $form['message'] = array(
+    '#type' => 'markup',
+    '#value' => t('Are you sure you want to delete the @task_name gallery', array('@task_name' => $task_name)),
+  );
+  $form['task_name'] = array(
+    '#type' => 'value',
+    '#value' => $task_name,
+  );
+  $form['delete'] = array(
+    '#type' => 'submit',
+    '#value' => t('Confirm Delete'),
+  );
+  return $form;
+}
+
+function imagefield_gallery_delete_submit($form, &$form_state) {
+  $query = db_query("SELECT * FROM {imagefield_galleries} WHERE task_name = '%s'", $form_state['values']['task_name']);
+  while ($result = db_fetch_object($query)) {
+    $page = $result;
+    break;
+  }
+  $galleries = module_invoke_all('ifg_api');
+  $gallery = $galleries[$page->gallery_style];
+  module_load_include($gallery['file_type'], $gallery['module'], $gallery['file_name']);
+  module_invoke($gallery['module'] .'_'. $page->gallery_style, 'page_delete', $page);
+  db_query("DELETE FROM {imagefield_galleries} WHERE task_name = '%s'", $page->task_name);
+  views_invalidate_cache();
+  menu_rebuild();
+  $form_state['redirect'] = 'admin/build/galleries';
+}
+
+function imagefield_gallery_create($task_name = NULL, $step = NULL) {
+  drupal_set_title('New Imagefield Gallery');
+  $form_info = array(
+    'id' => 'imagefield_gallery_new_gallery',
+    'show trail' => TRUE,
+    'show back' => TRUE,
+    'show return' => FALSE,
+    'next callback' => 'imagefield_gallery_new_gallery_next',
+    'finish callback' => 'imagefield_gallery_new_gallery_finish',
+    'return callback' => 'imagefield_gallery_new_gallery_finish',
+    'cancel callback' => 'imagefield_gallery_new_gallery_cancel',
+    'order' => array(
+      'gallery_type' => t('Gallery Type'),
+      'node_type' => t('Node Type'),
+      'node_fields' => t('Field Settings'),
+      'gallery_settings' => t('Gallery Settings'),
+    ),
+    'add order' => array(
+      'gallery_type' => t('Gallery Type'),
+      'node_type' => t('Node Type'),
+      'node_fields' => t('Field Settings'),
+      'gallery_settings' => t('Gallery Settings'),
+    ),
+    'forms' => array(
+      'gallery_type' => array(
+        'form id' => 'imagefield_gallery_gallery_type_form',
+      ),
+      'node_type' => array(
+        'form id' => 'imagefield_gallery_node_type_form',
+      ),
+      'node_fields' => array(
+        'form id' => 'imagefield_gallery_node_fields_form',
+      ),
+      'gallery_settings' => array(
+        'form id' => 'imagefield_gallery_gallery_settings_form',
+      ),
+    ),
+  );
+  if (is_null($step) && !is_null($task_name)  && arg(3) == 'edit') {
+    $pages = imagefield_gallery_get_pages($task_name);
+    foreach($pages as $page) {
+      $page->node_type = $page->node_type;
+      $page->image_fields = unserialize($page->image_fields);
+      $page->view_conf = unserialize($page->view_conf);
+      //dsm($page);
+      imagefield_gallery_set_page_cache($task_name, $page);
+      break;
+    }
+    $form_info['path'] = "admin/build/galleries/edit/$task_name/%step";
+    $form_state['page'] = imagefield_gallery_get_page_cache($task_name);
+  }
+  elseif ($task_name) {
+    if (arg(3) == 'edit') {
+      $form_info['path'] = "admin/build/galleries/edit/$task_name/%step";
+    }
+    else {
+      $form_info['path'] = "admin/build/galleries/create/$task_name/%step";
+    }
+    $form_state['page'] = imagefield_gallery_get_page_cache($task_name);
+  }
+  else {
+
+    $form_info['path'] = "admin/build/galleries/create/%task_name/%step";
+    $form_state = array();
+  }
+  ctools_include('wizard');
+  $output = ctools_wizard_multistep_form($form_info, $step, $form_state);
+  return $output;
+}
+
+function imagefield_gallery_gallery_type_form(&$form, &$form_state) {
+  ctools_include('dependent');
+  $form['task_name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Gallery name'),
+    '#maxlength' => 32,
+    '#default_value' => $form_state['page']->task_name,
+    '#description' => t('Imagefield Galleries require unique names.  Only alpha-numeric and underscores are allowed.'),
+    '#required' => TRUE,
+  );
+  if ($form_state['page']->task_name) {
+    $form['task_name']['#disabled'] = TRUE;
+    $form['task_name']['#value'] = $form_state['page']->task_name;
+  }
+  $form['gallery_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Gallery Type'),
+    '#options' => array(
+      'imagefield_gallery:fields' => t('A gallery ON a node'),
+      'imagefield_gallery:nodes' => t('A gallery OF nodes'),
+    ),
+    '#descrption' => t('Imagefield Gallery can create galleries of a specific field(s) on a node, OR it can create a gallery of nodes at a particular page.'),
+    '#default_value' => $form_state['page']->gallery_type ? $form_state['page']->gallery_type : 'imagefield_gallery:fields',
+    '#required' => TRUE,
+  );
+  $form['views_path'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Gallery Path'),
+    '#description' => t('Galleries of nodes must reside in a particular location.  Please provide a desired path for this item.'),
+    '#default_value' => $form_state['page']->view_conf['views_path'],
+    '#process' => array('ctools_dependent_process'),
+    '#dependency' => array('radio:gallery_type' => array('imagefield_gallery:nodes')),
+  );
+}
+
+function imagefield_gallery_gallery_type_form_validate(&$form, &$form_state) {
+  $name = $form_state['values']['task_name'];
+  if (preg_match('/[^a-zA-Z0-9_]/', $name)) {
+    form_set_error('task_name', t('Imagefield Gallery names must be alphanumeric or underscores only.'));
+  }
+  $gid = db_result(db_query("SELECT gid FROM {imagefield_galleries} WHERE task_name = '%s'", $name));
+  if ($gid && !$form_state['page']) {
+    form_set_error('task_name', t('Imagefield Gallery names must be unique.  A gallery with this name already exists.'));
+  }
+  if ($form_state['values']['gallery_type'] == 'imagefield_gallery:nodes') {
+    if ($form_state['values']['views_path'] == '') {
+      form_set_error('views_path', t('You MUST provide a path for a gallery of nodes.'));
+    }
+  }
+}
+
+function imagefield_gallery_gallery_type_form_submit($form, &$form_state) {
+  $task_name = $form_state['values']['task_name'];
+  $form_state['page']->task_name = $task_name;
+  $form_state['page']->gallery_type = $form_state['values']['gallery_type'];
+  if ($form_state['values']['views_path'] != '') {
+    $form_state['page']->view_conf['views_path'] = $form_state['values']['views_path'];
+  }
+  if (arg(3) == 'edit') {
+    $form_state['form_info']['path'] = "admin/build/galleries/edit/$task_name/%step";
+  }
+  else {
+    $form_state['form_info']['path'] = "admin/build/galleries/create/$task_name/%step";
+  }
+}
+
+function imagefield_gallery_node_type_form(&$form, &$form_state) {
+  $types = content_types();
+  foreach ($types as $type) {
+    foreach ($type['fields'] as $field) {
+      if ($field['widget']['module'] == 'imagefield') {
+        $options[$type['type']] = $type['name'];
+      }
+    }
+  }
+  $form['node_type'] = array(
+    '#type' => 'radios',
+    '#title' => t('Node Type'),
+    '#options' => $options,
+    '#descrption' => t('Imagefield Gallery can create galleries of a specific field(s) on a node, OR it can create a gallery of nodes at a particular page.'),
+    '#required' => TRUE,
+    '#default_value' => $form_state['page']->node_type,
+  );
+}
+
+function imagefield_gallery_node_type_form_submit($form, &$form_state) {
+  $form_state['page']->node_type = $form_state['values']['node_type'];
+}
+
+function imagefield_gallery_node_fields_form(&$form, &$form_state) {
+  $type = content_types($form_state['page']->node_type);
+  foreach ($type['fields'] as $field_name => $field) {
+    if ($field['widget']['module'] == 'imagefield') {
+      $options[$form_state['page']->node_type .':'. $field_name] = $field['widget']['label'];
+    }
+  }
+  $form['image_fields'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Fields'),
+    '#options' => $options,
+    '#required' => TRUE,
+    '#default_value' => $form_state['page']->image_fields ? $form_state['page']->image_fields : array(),
+    '#description' => t('Which imagefields would you like to use in your gallery?'),
+  );
+}
+
+function imagefield_gallery_node_fields_form_submit($form, &$form_state) {
+  $form_state['page']->image_fields = $form_state['values']['image_fields'];
+}
+
+function imagefield_gallery_gallery_settings_form(&$form, &$form_state) {
+  ctools_include('dependent');
+  $galleries = module_invoke_all('ifg_api');
+  $options = array();
+  foreach ($galleries as $key => $type) {
+    module_load_include($type['file_type'], $type['module'], $type['file_name']);
+    $function = $type['module'] .'_'. $key .'_gallery_options';
+    if (function_exists($function)) {
+      $form += module_invoke($type['module'] .'_'. $key, 'gallery_options', $form_state);
+    }
+    $options[$key] = $type['name'];
+  }
+  $form['gallery_style'] = array(
+    '#type' => 'radios',
+    '#title' => t('Gallery Type'),
+    '#options' => $options,
+    '#required' => TRUE,
+    '#default_value' => $form_state['page']->gallery_style ? $form_state['page']->gallery_style : array_shift(array_keys($options)),
+    '#tree' => TRUE,
+    '#weight' => -10,
+  );
+  $form['view_settings'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Views Settings'),
+  );
+  $form['view_settings']['items_per_page'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Number of items per page'),
+    '#default_value' => $form_state['page']->view_conf['items_per_page'] ? $form_state['page']->view_conf['items_per_page'] : 10,
+    '#required' => TRUE,
+  );
+  $form['view_settings']['use_pager'] = array(
+    '#type' => 'radios',
+    '#title' => t('Use Pager'),
+    '#options' => array(
+      '1' => t('Full Pager'),
+      'mini' => t('Mini Pager'),
+      '0' => t('No Pager'),
+    ),
+    '#required' => TRUE,
+    '#default_value' => $form_state['page']->view_conf['use_pager'] ? $form_state['page']->view_conf['use_pager'] : '1',
+  );
+}
+
+function imagefield_gallery_gallery_settings_form_validate(&$form, &$form_state) {
+  if (!is_numeric($form_state['values']['items_per_page'])) {
+    form_set_error('view_settings][items_per_page', t('Items per page must be numeric.'));
+  }
+  $galleries = module_invoke_all('ifg_api');
+  $gallery = $galleries[$form_state['values']['gallery_style']];
+  module_load_include($gallery['file_type'], $gallery['module'], $gallery['file_name']);
+  $function = $gallery['module'] .'_'. $form_state['values']['gallery_style'] .'_gallery_options_validate';
+  if (function_exists($function)) {
+    $function($form, $form_state);
+  }
+}
+
+function imagefield_gallery_gallery_settings_form_submit($form, &$form_state) {
+  $form_state['page']->gallery_style = $form_state['values']['gallery_style'];
+  $form_state['page']->view_conf['items_per_page'] = $form_state['values']['items_per_page'];
+  $form_state['page']->view_conf['use_pager'] = $form_state['values']['use_pager'];
+  $galleries = module_invoke_all('ifg_api');
+  $gallery = $galleries[$form_state['values']['gallery_style']];
+  module_load_include($gallery['file_type'], $gallery['module'], $gallery['file_name']);
+  $function = $gallery['module'] .'_'. $form_state['values']['gallery_style'] .'_gallery_options_submit';
+  if (function_exists($function)) {
+    $function($form, $form_state);
+  }
+}
+
+function imagefield_gallery_ifg_api() {
+  $galleries['lightbox'] = array(
+    'type' => 'formatter',
+    'file_type' => 'inc',
+    'module' => 'imagefield_gallery',
+    'file_name' => 'gallery_types/lightbox',
+    'table' => 'imagefield_gallery_lightbox',
+    'name' => t('IFG Lightbox2 Gallery'),
+  );
+  $galleries['scrollbox'] = array(
+    'type' => 'style',
+    'file_type' => 'inc',
+    'module' => 'imagefield_gallery',
+    'file_name' => 'gallery_types/scrollbox',
+    'table' => 'imagefield_gallery_scrollbox',
+    'name' => t('IFG Scrollbox Gallery'),
+  );
+  return $galleries;
+}
+
+/**
+ * Form wizard navigation callbacks
+ */
+
+/**
+ * Callback generated when the add page process is finished.
+ */
+function imagefield_gallery_new_gallery_finish(&$form_state) {
+  $page = &$form_state['page'];
+  if (!$page->gid) {
+    drupal_write_record('imagefield_galleries', $page);
+  }
+  else {
+    drupal_write_record('imagefield_galleries', $page, 'gid');
+  }
+  $galleries = module_invoke_all('ifg_api');
+  $gallery = $galleries[$page->gallery_style];
+  module_load_include($gallery['file_type'], $gallery['module'], $gallery['file_name']);
+  $function = $gallery['module'] .'_'. $form_state['values']['gallery_style'];
+  module_invoke($function, 'gallery_save', $page);
+  $form_state['redirect'] = 'admin/build/galleries';
+
+  // Clear the cache
+  imagefield_gallery_clear_page_cache($form_state['page']->task_name);
+  views_invalidate_cache();
+  menu_rebuild();
+}
+
+/**
+ * Callback generated when the 'next' button is clicked.
+ *
+ * All we do here is store the cache.
+ */
+function imagefield_gallery_new_gallery_next(&$form_state) {
+  // Update the cache with changes.
+  imagefield_gallery_set_page_cache($form_state['page']->task_name, $form_state['page']);
+}
+
+/**
+ * Chaos Tools cache style functions
+ */
+
+function imagefield_gallery_cache_load($name) {
+  $cache = new stdClass();
+  $cache->task_name = $name;
+  return $cache;
+}
+
+function imagefield_gallery_get_page_cache($name) {
+  ctools_include('object-cache');
+  $cache = ctools_object_cache_get('imagefield_gallery', $name);
+  if (!$cache) {
+    $cache = imagefield_gallery_cache_load($name);
+    $cache->locked = ctools_object_cache_test('imagefield_gallery', $name);
+  }
+
+  return $cache;
+}
+
+/**
+ * Store changes to a task handler in the object cache.
+ */
+function imagefield_gallery_set_page_cache($name, $page) {
+  ctools_include('object-cache');
+  $cache = ctools_object_cache_set('imagefield_gallery', $name, $page);
+}
+
+/**
+ * Remove an item from the object cache.
+ */
+function imagefield_gallery_clear_page_cache($name) {
+  ctools_include('object-cache');
+  ctools_object_cache_clear('imagefield_gallery', $name);
+}
+
+function imagefield_gallery_export_task_handler($handler, $indent = '') {
+  /*ctools_include('export');
+  ctools_include('plugins');
+  $handler = drupal_clone($handler);
+
+  $append = '';
+  if ($function = ctools_plugin_load_function('page_manager', 'task_handlers', $handler->handler, 'export')) {
+    $append = $function($handler, $indent);
+  }
+
+  $output = ctools_export_object('page_manager_handlers', $handler, $indent);
+  $output .= $append;
+
+  return $output;*/
+}
+
+function imagefield_gallery_get_pages($page = NULL) {
+  if (is_null($page)) {
+    $query = db_query("SELECT * FROM {imagefield_galleries}");
+  }
+  else {
+    $query = db_query("SELECT * FROM {imagefield_galleries} WHERE task_name = '%s'", $page);
+  }
+  $galleries = module_invoke_all('ifg_api');
+  $results = array();
+  while ($result = db_fetch_object($query)) {
+    $gallery = $galleries[$result->gallery_style];
+    module_load_include($gallery['file_type'], $gallery['module'], $gallery['file_name']);
+    module_invoke($gallery['module'] .'_'. $result->gallery_style, 'page_load', $result);
+    $results[$result->gid] = $result;
+  }
+  return $results;
+}
+
+function imagefield_gallery_nodeapi(&$node, $op, $a3 = NULL, $a4 = NULL) {
+  switch($op) {
+    case 'view':
+      $query = db_query("SELECT * FROM {imagefield_galleries} WHERE node_type = '%s' and gallery_type = 'imagefield_gallery:fields'", $node->type);
+      while($result = db_fetch_object($query)) {
+        $result->image_fields = unserialize($result->image_fields);
+        $result->view_conf = unserialize($result->view_conf);
+        $results[] = $result;
+      }
+      if ($results) {
+        foreach ($results as $gallery) {
+          foreach ($gallery->image_fields as $fields) {
+            list($type, $field) = explode(':', $fields);
+            unset($node->content[$field]);
+            $node->content[$field][0]['#value'] = views_embed_view('imagefield_gallery_'. $gallery->task_name);
+          }
+        }
+      }
+      break;
+  }
+}
+
+function imagefield_gallery_nodes(&$view, &$handler, $page) {
+  $handler->override_option('filters', array(
+    'status' => array(
+      'operator' => '=',
+      'value' => '1',
+      'group' => '0',
+      'exposed' => FALSE,
+      'expose' => array(
+        'operator' => FALSE,
+        'label' => '',
+      ),
+      'id' => 'status',
+      'table' => 'node',
+      'field' => 'status',
+      'relationship' => 'none',
+    ),
+    'type' => array(
+      'operator' => 'in',
+      'value' => array($page->node_type => $page->node_type),
+      'group' => '0',
+      'exposed' => FALSE,
+      'expose' => array(
+        'operator' => FALSE,
+        'label' => '',
+      ),
+      'id' => 'type',
+      'table' => 'node',
+      'field' => 'type',
+      'relationship' => 'none',
+    ),
+  ));
+  $handler = $view->new_display('page', 'Page', 'page_1');
+  $handler->override_option('path', $page->view_conf['views_path']);
+  $handler->override_option('menu', array(
+    'type' => 'none',
+    'title' => '',
+    'description' => '',
+    'weight' => 0,
+    'name' => 'navigation',
+  ));
+  $handler->override_option('tab_options', array(
+    'type' => 'none',
+    'title' => '',
+    'description' => '',
+    'weight' => 0,
+  ));
+}
+
+function imagefield_gallery_fields(&$view, &$handler, $page) {
+  $types = node_get_types();
+  foreach ($types as $key => $type) {
+    if ($key == $page->node_type) {
+      $options[$key] = $key;
+    }
+    else {
+      $options[$key] = 0;
+    }
+  }
+  $handler->override_option('arguments', array(
+    'nid' => array(
+      'default_action' => 'default',
+      'style_plugin' => 'default_summary',
+      'style_options' => array(),
+      'wildcard' => 'all',
+      'wildcard_substitution' => 'All',
+      'title' => '',
+      'breadcrumb' => '',
+      'default_argument_type' => 'node',
+      'default_argument' => '',
+      'validate_type' => 'node',
+      'validate_fail' => 'not found',
+      'break_phrase' => 0,
+      'not' => 0,
+      'id' => 'nid',
+      'table' => 'node',
+      'field' => 'nid',
+      'validate_user_argument_type' => 'uid',
+      'validate_user_roles' => array(
+        '2' => 0,
+      ),
+      'relationship' => 'none',
+      'default_options_div_prefix' => '',
+      'default_argument_user' => 0,
+      'default_argument_fixed' => '',
+      'default_argument_php' => '',
+      'validate_argument_node_type' => $options,
+      'validate_argument_node_access' => 0,
+      'validate_argument_nid_type' => 'nid',
+      'validate_argument_vocabulary' => array(
+        '1' => 0,
+        '2' => 0,
+      ),
+      'validate_argument_type' => 'tid',
+      'validate_argument_transform' => 0,
+      'validate_user_restrict_roles' => 0,
+      'validate_argument_php' => '',
+    ),
+  ));
+}
